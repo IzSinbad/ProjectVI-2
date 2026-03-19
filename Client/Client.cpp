@@ -2,6 +2,7 @@
 //
 
 #include <iostream>
+#include "TelemetryPacket.h"
 
 int main()
 {
