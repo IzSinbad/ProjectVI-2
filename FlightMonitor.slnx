@@ -6,15 +6,11 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="Client/Client.vcxproj">
-    <BuildType Solution="Client|x64" Project="Debug" />
+  <Project Path="Client/Client.vcxproj" Id="11496cca-bf58-4bb9-9f07-c79cddceb89a">
     <BuildType Solution="Debug|x64" Project="Release" />
   </Project>
-  <Project Path="FlightMonitor/FlightMonitor.vcxproj">
-    <BuildType Solution="Client|*" Project="Debug" />
-  </Project>
-  <Project Path="Server/Server.vcxproj">
-    <BuildType Solution="Client|*" Project="Debug" />
+  <Project Path="FlightMonitor/FlightMonitor.vcxproj" Id="d64acc42-da67-41de-ace7-f0f8635c2af5" />
+  <Project Path="Server/Server.vcxproj" Id="9e0c1812-5956-4b5a-82cd-b7c575bae599">
     <BuildType Solution="Debug|x64" Project="Release" />
   </Project>
 </Solution>
