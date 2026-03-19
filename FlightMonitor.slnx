@@ -1,0 +1,20 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Client" />
+    <BuildType Name="Debug" />
+    <BuildType Name="Release" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Client/Client.vcxproj">
+    <BuildType Solution="Client|x64" Project="Debug" />
+    <BuildType Solution="Debug|x64" Project="Release" />
+  </Project>
+  <Project Path="FlightMonitor/FlightMonitor.vcxproj">
+    <BuildType Solution="Client|*" Project="Debug" />
+  </Project>
+  <Project Path="Server/Server.vcxproj">
+    <BuildType Solution="Client|*" Project="Debug" />
+    <BuildType Solution="Debug|x64" Project="Release" />
+  </Project>
+</Solution>
