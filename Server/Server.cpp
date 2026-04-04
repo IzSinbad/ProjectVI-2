@@ -122,7 +122,7 @@ void handleClient(SOCKET clientSock) {
 
     /* recvAll returned false, meaning the client disconnected — flight is over */
     printf("Plane %d | Fuel: %.2f | Avg: %.4f gal/s\n",
-        id, pkt.fuelRemaining, r.avgConsumption);
+        id, pkt.fuelRemaining, flightLog[id].avgConsumption);
 
     /* Lock the log and store the final average, then mark the flight as inactive */
     {
