@@ -19,7 +19,7 @@
 #include <time.h>
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
-#include "TelemetryPacket.h"
+#include "../TelemetryPacket.h"
 
 /**
  * @brief The four CSV telemetry files the client can choose from.
