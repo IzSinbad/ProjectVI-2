@@ -16,7 +16,7 @@
 #include <mutex>
 #include <map>
 #pragma comment(lib, "ws2_32.lib")
-#include "TelemetryPacket.h"
+#include "../TelemetryPacket.h"
 
 /** @brief Stores flight records for every plane that has connected, keyed by plane ID. */
 std::map<int, FlightRecord> flightLog;
