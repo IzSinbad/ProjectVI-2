@@ -82,6 +82,13 @@ void handleClient(SOCKET clientSock) {
         rec.planeID = id;
         rec.isActive = true;
 
+        /* Save the timestamp from the first packet */
+        strncpy(rec.lastTimestamp, pkt.timestamp, 31);
+        rec.lastTimestamp[31] = '\0';
+
+        /* Store the initial fuel level */
+        rec.prevFuel = pkt.fuelRemaining;
+
         /* If this plane ID already exists in the log, let the user know it is starting fresh */
         if (flightLog.count(id) > 0) {
             printf("Plane %d reconnected. Starting new flight record.\n", id);
