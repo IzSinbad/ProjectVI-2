@@ -54,6 +54,9 @@ void handleClient(SOCKET clientSock) {
         std::lock_guard<std::mutex> lk(flightLogMutex);
         FlightRecord& r = flightLog[id];
 
+        strncpy(r.lastTimestamp, pkt.timestamp, 31);
+        r.lastTimestamp[31] = '\0';
+
         if (firstReading) {
             r.prevFuel = pkt.fuelRemaining;
             firstReading = false;
@@ -77,8 +80,8 @@ void handleClient(SOCKET clientSock) {
         flightLog[id].isActive = false;
     }
 
-    printf("Plane %d landed. Avg fuel consumption: %.4f gal/s\n",
-        id, flightLog[id].finalAvg);
+    printf("Plane %d landed. Last timestamp: %s. Avg fuel consumption: %.4f gal/s\n",
+        id, flightLog[id].lastTimestamp, flightLog[id].finalAvg);
 
     closesocket(clientSock);
 }

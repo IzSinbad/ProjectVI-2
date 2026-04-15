@@ -3,17 +3,19 @@
 struct FlightRecord {
     int    planeID;
     // Last fuel reading in gallons
-    double prevFuel;        
+    double prevFuel;
     // Sum of all consumption values
-    double totalConsumption;   
+    double totalConsumption;
     // Number of valid readings received
-    int    readingCount;  
+    int    readingCount;
     // Running average = totalConsumption / readingCount
-    double avgConsumption;  
-    // Stored when the flight ends 
-    double finalAvg;    
+    double avgConsumption;
+    // Stored when the flight ends
+    double finalAvg;
     // This will remain true while the flight is in progress
-    bool   isActive;           
+    bool   isActive;
+    // Most recent timestamp received from this plane
+    char   lastTimestamp[32];
 };
 
 struct TelemetryPacket {
