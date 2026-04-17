@@ -2,41 +2,44 @@
  * @file TelemetryPacket.h
  * @brief Shared data structures used by both the Client and the Server.
  *
- * This header defines the two structs that make up the core of the
- * FlightMonitor system. TelemetryPacket is what the client sends over
- * the network. FlightRecord is what the server keeps internally to
- * track the state of each active flight.
+ * This header defines the two structs that the FlightMonitor system runs on.
+ * TelemetryPacket is what the client sends over TCP. FlightRecord is what
+ * the server keeps internally to track each active flight.
  */
 
 #pragma once
 
-/**
- * @brief Tracks everything the server knows about one airplane's flight.
- *
- * The server creates one of these for each plane that connects and updates
- * it as packets arrive. It stores running totals so the average fuel
- * consumption can be calculated at any point during the flight.
- */
+#pragma pack(1)
+
+ /**
+  * @brief Tracks everything the server knows about one plane's flight.
+  *
+  * One of these gets created for each plane that connects. The server updates
+  * it as packets come in, keeping running totals so the average fuel consumption
+  * can be calculated when the flight ends.
+  */
 struct FlightRecord {
-    int    planeID;           ///< The unique ID of the airplane this record belongs to.
-    double prevFuel;          ///< The fuel level from the last packet, used to calculate the next delta.
-    double totalConsumption;  ///< Running total of all fuel burned so far (in gallons).
-    int    readingCount;      ///< How many valid consumption readings have been received.
-    double avgConsumption;    ///< Current running average: totalConsumption divided by readingCount.
-    double finalAvg;          ///< The average consumption saved when the flight ends.
-    bool   isActive;          ///< True while the flight is in progress, false after the client disconnects.
-    char   lastTimestamp[32]; ///< The timestamp string from the most recently received packet.
+    int    planeID;           ///< Unique ID of the plane this record belongs to.
+    double prevFuel;          ///< Fuel level from the last packet, used to calculate how much was burned.
+    double totalConsumption;  ///< Total fuel burned so far across all valid readings, in gallons.
+    int    readingCount;      ///< Number of valid fuel consumption readings received so far.
+    double avgConsumption;    ///< Running average fuel consumption, kept for reference during the flight.
+    double finalAvg;          ///< Final average consumption saved when the plane lands.
+    bool   isActive;          ///< True while the flight is ongoing, false once the client disconnects.
+    char   lastTimestamp[32]; ///< Timestamp from the most recent packet received.
 };
 
 /**
- * @brief One unit of telemetry data sent from a Client to the Server over TCP.
+ * @brief One packet of telemetry data sent from the Client to the Server over TCP.
  *
- * The client fills one of these structs for each line it reads from the CSV
- * file and sends the whole struct as raw bytes across the network. The server
- * receives the same struct on the other end and reads the fields directly.
+ * The client builds one of these for each line it reads from the CSV file
+ * and sends it as raw bytes over the network. The server receives the same
+ * struct on the other end and reads the fields directly.
  */
 struct TelemetryPacket {
-    int    planeID;        ///< Identifies which airplane is sending this data.
-    char   timestamp[32];  ///< The time this reading was recorded, as a string (e.g. "3_3_2023 14:53:21").
+    int    planeID;        ///< ID of the plane sending this data.
+    char   timestamp[32];  ///< Time this reading was recorded, as a string like "3_3_2023 14:53:21".
     double fuelRemaining;  ///< How much fuel is left in the tank at this moment, in gallons.
 };
+
+#pragma pack()

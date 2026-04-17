@@ -1,13 +1,11 @@
 /**
  * @file Client.cpp
- * @brief TCP client that reads flight telemetry from a CSV file and streams
- *        it to the FlightMonitor server one packet per second.
+ * @brief TCP client that reads flight telemetry from a file and streams it to the server.
  *
- * Each time this program runs it picks a random CSV data file, connects to
- * the server over TCP, and sends one TelemetryPacket every second until the
- * file runs out of data. The plane's unique ID is taken from the Windows
- * process ID, so running multiple copies at the same time gives each one
- * a different ID automatically.
+ * Each time this runs it connects to the FlightMonitor server over TCP and sends
+ * one TelemetryPacket every 100ms until the file runs out of data. The plane's
+ * unique ID comes from the Windows process ID, so running multiple copies at the
+ * same time gives each one a different ID automatically.
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -21,12 +19,12 @@
 #pragma comment(lib, "ws2_32.lib")
 #include "../TelemetryPacket.h"
 
-/**
- * @brief The four CSV telemetry files the client can choose from.
- *
- * One of these is picked at random each time the program starts.
- * Each file contains a different flight's worth of fuel readings.
- */
+ /**
+  * @brief The four telemetry files the client can choose from.
+  *
+  * Each file contains a different flight's worth of fuel readings.
+  * Currently locked to FILES[0] for consistent performance testing.
+  */
 const char* FILES[4] = {
     "katl-kefd-B737-700.txt",
     "Telem_2023_3_12_14_56_40.txt",
@@ -35,44 +33,39 @@ const char* FILES[4] = {
 };
 
 /**
- * @brief Entry point for the client application.
+ * @brief Entry point for the client.
  *
- * Connects to the FlightMonitor server, reads a CSV telemetry file line by
- * line, and sends each line as a TelemetryPacket over TCP. There is a one
- * second pause between packets to simulate real-time data coming in during
- * an actual flight. The program ends once it reaches the last line of the file.
+ * Connects to the FlightMonitor server, opens the telemetry file, and sends
+ * one packet per line until EOF. There is a 100ms pause between packets to
+ * simulate real-time data coming in during a flight.
  *
  * @param argc Number of command line arguments.
- * @param argv Command line arguments. argv[1] is the optional server IP address
- *             (defaults to "127.0.0.1" if not provided).
- * @return 0 on success, 1 if the connection or file could not be opened.
+ * @param argv argv[1] is the server IP address. Defaults to 127.0.0.1 if not provided.
+ * @return 0 on success, 1 if the connection or file failed to open.
  */
 int main(int argc, char* argv[]) {
 
-    /* Use the IP address from the command line, or fall back to localhost */
+    /* Use the IP from the command line, or fall back to localhost */
     const char* serverIP = (argc > 1) ? argv[1] : "127.0.0.1";
 
-    /* Use the Windows process ID as this plane's unique ID so that running
-       multiple clients at the same time gives each one a different number */
+    /* Use the process ID as the plane's unique ID */
     int uniqueID = (int)GetCurrentProcessId();
 
-    /* Seed the random number generator with the current time XOR the process ID
-       so that two clients started at the same second still pick different files */
-    srand((unsigned)time(NULL) ^ (unsigned)uniqueID);
-    const char* fname = FILES[rand() % 4];
+    /* Always use katl-kefd-B737-700.txt for consistent testing */
+    const char* fname = FILES[0];
 
-    /* Start up the Windows networking library (required before using sockets on Windows) */
+    /* Start up Winsock before using any sockets */
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    /* Create a TCP socket and set up the server address we want to connect to */
+    /* Create a TCP socket and configure the server address */
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in sa = {};
     sa.sin_family = AF_INET;
     sa.sin_port = htons(5000);
     inet_pton(AF_INET, serverIP, &sa.sin_addr);
 
-    /* Try to connect — if it fails, print an error and exit cleanly */
+    /* Try to connect, exit cleanly if it fails */
     if (connect(s, (sockaddr*)&sa, sizeof(sa)) != 0) {
         printf("Connect failed to %s\n", serverIP);
         WSACleanup();
@@ -81,48 +74,56 @@ int main(int argc, char* argv[]) {
 
     printf("Plane %d connected to %s\n", uniqueID, serverIP);
 
-    /* Open the randomly selected CSV data file for reading */
+    /* Open the telemetry file */
     FILE* f = fopen(fname, "r");
     if (!f) {
-        printf("Could not open file: %s\n", fname);
+        printf("Plane %d: Could not open file: %s\n", uniqueID, fname);
         closesocket(s);
         WSACleanup();
         return 1;
     }
+    printf("Plane %d: File opened: %s\n", uniqueID, fname);
+    fflush(stdout);
 
-    /* Skip the first line because it is a header row, not actual data */
+    /* Skip the header row */
     char line[128];
     fgets(line, sizeof(line), f);
 
-    /* Read one data line at a time and send it as a packet to the server */
+    /* Read one line at a time and send it as a packet */
     while (fgets(line, sizeof(line), f)) {
 
-        /* Each line is formatted as "timestamp,fuelValue" — find the comma that separates them */
+        /* Each line is "timestamp,fuelValue" so find the comma */
         char* comma = strchr(line, ',');
         if (!comma) continue;
 
-        /* Build a new packet and fill in the plane ID */
+        /* Build the packet */
         TelemetryPacket pkt = {};
         pkt.planeID = uniqueID;
 
-        /* Copy the timestamp — it is everything before the comma */
+        /* Everything before the comma is the timestamp */
         int tsLen = (int)(comma - line);
         if (tsLen >= 32) tsLen = 31;
         strncpy(pkt.timestamp, line, tsLen);
         pkt.timestamp[tsLen] = '\0';
 
-        /* Parse the fuel value — it is the number immediately after the comma */
+        /* The number after the comma is the fuel value */
         pkt.fuelRemaining = atof(comma + 1);
 
-        /* Send the completed packet to the server */
-        send(s, (char*)&pkt, sizeof(pkt), 0);
+        /* Send the packet to the server */
+        int sent = send(s, (char*)&pkt, sizeof(pkt), 0);
+        if (sent < 0) {
+            printf("Plane %d: Send failed!\n", uniqueID);
+            fflush(stdout);
+            break;
+        }
 
-        /* Wait one second before sending the next packet to simulate real-time telemetry */
-        Sleep(1000);
+        /* Wait 100ms before sending the next packet */
+        Sleep(100);
     }
 
-    /* All lines have been sent — the flight is complete */
-    printf("Plane %d flight complete.\n", uniqueID);
+    /* All lines sent, flight is done */
+    printf("Plane %d: EOF reached. Flight complete.\n", uniqueID);
+    fflush(stdout);
     fclose(f);
     closesocket(s);
     WSACleanup();

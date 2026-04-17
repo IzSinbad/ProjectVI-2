@@ -1,11 +1,16 @@
 /**
  * @file Server.cpp
- * @brief TCP server that receives flight telemetry from multiple airplane clients
- *        and tracks fuel consumption for each active flight in real time.
+ * @brief TCP server that receives flight telemetry from multiple clients and
+ *        tracks fuel consumption for each active flight in real time.
  *
  * The server listens on port 5000 and spawns a new thread for each client
- * that connects. Each client represents one airplane sending telemetry data.
+ * that connects. Each client represents one plane sending telemetry data.
  * The server keeps a shared log of all flights and updates it as packets arrive.
+ *
+ * Optimizations applied after initial performance testing:
+ * 1. std::map replaced with std::unordered_map for O(1) average lookups
+ * 2. Global mutex replaced with per-plane mutex to stop threads blocking each other
+ * 3. Average fuel consumption now only calculated once at landing, not every packet
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -14,38 +19,59 @@
 #include <ws2tcpip.h>
 #include <thread>
 #include <mutex>
-#include <map>
+#include <unordered_map>
 #pragma comment(lib, "ws2_32.lib")
 #include "../TelemetryPacket.h"
 
-/** @brief Stores flight records for every plane that has connected, keyed by plane ID. */
-std::map<int, FlightRecord> flightLog;
+ /**
+  * @brief Wraps a FlightRecord with its own mutex for per-plane locking.
+  *
+  * Before optimization, one global mutex blocked all threads on every packet.
+  * Now each plane has its own mutex so threads handling different planes
+  * never block each other.
+  */
+struct FlightRecordWithMutex {
+    FlightRecord data;
+    std::mutex planeMutex;
+};
 
-/** @brief Protects flightLog from being read and written at the same time by multiple threads. */
+/**
+ * @brief Stores flight records for every plane that has connected, keyed by plane ID.
+ *
+ * Changed from std::map (O(log N) red-black tree) to std::unordered_map
+ * (O(1) hash table). Before this change, std::map operations consumed 99.77%
+ * of CPU time under load. After this change that dropped to 2.43%.
+ */
+std::unordered_map<int, FlightRecordWithMutex> flightLog;
+
+/**
+ * @brief Protects flightLog insertions only.
+ *
+ * Only locked when a new plane first connects. All packet processing
+ * uses the individual plane's mutex instead.
+ */
 std::mutex flightLogMutex;
 
 /**
- * @brief Receives exactly the requested number of bytes from a socket,
- *        handling the case where TCP delivers data in multiple smaller chunks.
+ * @brief Reads exactly the requested number of bytes from a socket.
  *
- * Normally a single recv() call might only give you part of what you asked for.
- * This function keeps calling recv() in a loop until all the bytes arrive,
- * so the caller always gets a complete packet.
+ * TCP can deliver data in smaller chunks than requested, so this function
+ * keeps calling recv() until all the bytes arrive. Returns false if the
+ * connection closed or something went wrong.
  *
- * @param s   The socket to read from.
- * @param buf The buffer to store the received bytes in.
- * @param len The exact number of bytes we want to receive.
- * @return true  if all bytes were received successfully.
- * @return false if the connection was closed or an error occurred.
+ * @param s   Socket to read from.
+ * @param buf Buffer to store the received bytes.
+ * @param len Exact number of bytes to receive.
+ * @return true if all bytes received, false if connection closed or error.
  */
 bool recvAll(SOCKET s, char* buf, int len) {
     int received = 0;
 
-    /* Keep looping until we have collected every byte we need */
+    /* Keep looping until we have all the bytes we need */
     while (received < len) {
         int n = recv(s, buf + received, len - received, 0);
 
-        /* If recv returns 0 or negative, the client disconnected or something went wrong */
+        /* 0 or negative means the client disconnected or there was an error */
         if (n <= 0) return false;
         received += n;
     }
@@ -53,21 +79,27 @@ bool recvAll(SOCKET s, char* buf, int len) {
 }
 
 /**
- * @brief Handles all communication with a single connected airplane client.
+ * @brief Handles all communication with a single connected plane.
  *
- * This function runs on its own thread for each client. It receives the first
- * packet to register the plane, then keeps receiving packets until the client
- * disconnects. After each packet it updates the plane's fuel consumption stats.
- * When the client disconnects the flight is marked as finished and the final
- * average fuel consumption is saved and printed.
+ * Runs on its own thread for each client. Reads the first packet to register
+ * the plane, then keeps receiving packets until the client disconnects or
+ * times out. When the flight ends the final average fuel consumption is
+ * calculated once and saved.
  *
- * @param clientSock The socket connected to this specific airplane client.
+ * A 10 second socket timeout is set so threads clean up properly if a client
+ * crashes or loses connection without sending a disconnect.
+ *
+ * @param clientSock Socket connected to this specific plane.
  */
 void handleClient(SOCKET clientSock) {
+
+    DWORD timeout = 10000; // 10 seconds
+    setsockopt(clientSock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+
     TelemetryPacket pkt;
     bool firstReading = true;
 
-    /* Read the very first packet so we know which plane just connected */
+    /* Read the first packet to find out which plane just connected */
     if (!recvAll(clientSock, (char*)&pkt, sizeof(pkt))) {
         closesocket(clientSock);
         return;
@@ -75,106 +107,104 @@ void handleClient(SOCKET clientSock) {
 
     int id = pkt.planeID;
 
-    /* Create a new flight record for this plane, resetting stats if it reconnects */
+    /* Register the plane in the flight log, global lock only needed here */
     {
         std::lock_guard<std::mutex> lk(flightLogMutex);
         FlightRecord rec = {};
         rec.planeID = id;
         rec.isActive = true;
 
-        /* Save the timestamp from the first packet */
         strncpy(rec.lastTimestamp, pkt.timestamp, 31);
         rec.lastTimestamp[31] = '\0';
 
-        /* Store the initial fuel level */
         rec.prevFuel = pkt.fuelRemaining;
 
-        /* If this plane ID already exists in the log, let the user know it is starting fresh */
         if (flightLog.count(id) > 0) {
             printf("Plane %d reconnected. Starting new flight record.\n", id);
         }
-        flightLog[id] = rec;
+        flightLog[id].data = rec;
     }
 
     printf("Plane %d connected.\n", id);
 
-    /* Keep receiving packets until the client closes the connection */
+    /* Keep receiving packets until the client disconnects or times out.
+       Only locks this plane's own mutex so other planes are never affected. */
     while (recvAll(clientSock, (char*)&pkt, sizeof(pkt))) {
-        std::lock_guard<std::mutex> lk(flightLogMutex);
-        FlightRecord& r = flightLog[id];
+        std::lock_guard<std::mutex> lk(flightLog[id].planeMutex);
+        FlightRecord& r = flightLog[id].data;
 
-        /* Save the most recent timestamp from this packet so we can display it at landing */
+        /* Save the latest timestamp */
         strncpy(r.lastTimestamp, pkt.timestamp, 31);
         r.lastTimestamp[31] = '\0';
 
         if (firstReading) {
-            /* Store the starting fuel level — we can't calculate consumption yet
-               because we need at least two readings to find the difference */
             r.prevFuel = pkt.fuelRemaining;
             firstReading = false;
         }
         else {
-            /* Calculate how much fuel was burned since the last reading */
+            /* Calculate fuel burned since last reading */
             double cons = r.prevFuel - pkt.fuelRemaining;
 
-            /* Only count positive values — negative would mean a refuel or a bad reading */
+            /* Skip negative values, those mean a refuel or bad data */
             if (cons > 0) {
                 r.totalConsumption += cons;
                 r.readingCount++;
-                r.avgConsumption = r.totalConsumption / r.readingCount;
+                /* Average is NOT calculated here anymore.
+                   It was running on every single packet but only needed at landing.
+                   Now calculated once below when the flight ends. */
             }
             r.prevFuel = pkt.fuelRemaining;
         }
     }
 
-    /* recvAll returned false, meaning the client disconnected — flight is over */
-    printf("Plane %d | Fuel: %.2f | Avg: %.4f gal/s\n",
-        id, pkt.fuelRemaining, flightLog[id].avgConsumption);
-
-    /* Lock the log and store the final average, then mark the flight as inactive */
+    /* Client disconnected or timed out, flight is over.
+       Calculate the final average exactly once here. */
     {
-        std::lock_guard<std::mutex> lk(flightLogMutex);
-        flightLog[id].finalAvg = flightLog[id].avgConsumption;
-        flightLog[id].isActive = false;
-    }
+        std::lock_guard<std::mutex> lk(flightLog[id].planeMutex);
+        FlightRecord& r = flightLog[id].data;
 
-    printf("Plane %d landed. Last timestamp: %s. Avg fuel consumption: %.4f gal/s\n",
-        id, flightLog[id].lastTimestamp, flightLog[id].finalAvg);
+        if (r.readingCount > 0) {
+            r.finalAvg = r.totalConsumption / r.readingCount;
+        }
+        r.isActive = false;
+
+        printf("Plane %d | Fuel: %.2f | Avg: %.4f gal/s\n",
+            id, pkt.fuelRemaining, r.finalAvg);
+
+        printf("Plane %d landed. Last timestamp: %s. Avg fuel consumption: %.4f gal/s\n",
+            id, r.lastTimestamp, r.finalAvg);
+    }
 
     closesocket(clientSock);
 }
 
 /**
- * @brief Entry point for the server application.
+ * @brief Entry point for the server.
  *
- * Sets up Winsock, creates a TCP socket, binds it to port 5000, and enters
- * an infinite loop accepting incoming client connections. Each new connection
- * gets its own detached thread running handleClient(), so multiple planes can
- * be tracked at the same time without blocking each other.
+ * Sets up Winsock, binds to port 5000, and loops forever accepting connections.
+ * Each new connection gets its own detached thread running handleClient().
  *
- * @return 0 when the server exits (this only happens if it is killed manually).
+ * @return 0 when the server exits (only happens if killed manually).
  */
 int main() {
-    /* Start up the Windows networking library (required on Windows before using sockets) */
+    /* Start up Winsock */
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    /* Create a standard TCP socket */
+    /* Create a TCP socket */
     SOCKET srv = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-    /* Configure the server address — listen on all network interfaces, port 5000 */
+    /* Listen on all network interfaces, port 5000 */
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(5000);
     addr.sin_addr.s_addr = INADDR_ANY;
     bind(srv, (sockaddr*)&addr, sizeof(addr));
 
-    /* Start listening for incoming connections */
     listen(srv, SOMAXCONN);
     printf("Server listening on port 5000...\n");
 
-    /* Accept connections forever — each one spawns a thread and immediately detaches it
-       so the main loop can go back to waiting for the next plane right away */
+    /* Accept connections forever, each one gets its own detached thread */
     while (true) {
         SOCKET clientSock = accept(srv, nullptr, nullptr);
         if (clientSock == INVALID_SOCKET) continue;
